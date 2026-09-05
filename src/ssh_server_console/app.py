@@ -280,34 +280,55 @@ class MainWindow(Gtk.ApplicationWindow):
             modal=True,
         )
         dialog.add_button("Stäng", Gtk.ResponseType.CLOSE)
-        dialog.set_default_size(620, -1)
+        dialog.set_default_size(680, -1)
         grid = Gtk.Grid(column_spacing=18, row_spacing=7)
         grid.set_border_width(16)
+        row = 0
 
-        rows = [
-            ("Värd", host.alias),
-            ("Adress", (details.address if details else "") or host.hostname or "–"),
-            ("Port", (details.port if details else "") or host.port or "22"),
-            ("Användare", host.user or "–"),
-            ("Serverversion", (details.remote_version if details else "") or "–"),
-            ("Key exchange", (details.kex_algorithm if details else "") or "–"),
-            ("Host key", (details.host_key_algorithm if details else "") or "–"),
-            ("Fingerprint", (details.host_key_fingerprint if details else "") or "–"),
-            ("Kryptering klient → server", (details.cipher_client_to_server if details else "") or "–"),
-            ("Kryptering server → klient", (details.cipher_server_to_client if details else "") or "–"),
-            ("MAC klient → server", (details.mac_client_to_server if details else "") or "–"),
-            ("MAC server → klient", (details.mac_server_to_client if details else "") or "–"),
-            ("Komprimering klient → server", (details.compression_client_to_server if details else "") or "–"),
-            ("Komprimering server → klient", (details.compression_server_to_client if details else "") or "–"),
-            ("Autentisering", (details.authentication if details else "") or "–"),
-        ]
-        for row, (label_text, value_text) in enumerate(rows):
+        def add_section(title: str) -> None:
+            nonlocal row
+            heading = Gtk.Label(xalign=0)
+            heading.set_markup(f"<b>{title}</b>")
+            heading.set_margin_top(10 if row else 0)
+            heading.set_margin_bottom(2)
+            grid.attach(heading, 0, row, 2, 1)
+            row += 1
+
+        def add_row(label_text: str, value_text: str) -> None:
+            nonlocal row
             label = Gtk.Label(label=label_text, xalign=1)
             label.get_style_context().add_class("dim-label")
-            value = Gtk.Label(label=value_text, xalign=0, selectable=True)
+            value = Gtk.Label(label=value_text or "–", xalign=0, selectable=True)
             value.set_line_wrap(True)
             grid.attach(label, 0, row, 1, 1)
             grid.attach(value, 1, row, 1, 1)
+            row += 1
+
+        def mac_value(value: str) -> str:
+            if value == "<implicit>":
+                return "Inbyggd i cipher"
+            return value or "–"
+
+        add_section("Anslutning")
+        add_row("Värd", host.alias)
+        add_row("Adress", (details.address if details else "") or host.hostname or "–")
+        add_row("Port", (details.port if details else "") or host.port or "22")
+        add_row("Användare", host.user or "–")
+        add_row("Serverversion", (details.remote_version if details else "") or "–")
+
+        add_section("Kryptering")
+        add_row("Key exchange", (details.kex_algorithm if details else "") or "–")
+        add_row("Host key", (details.host_key_algorithm if details else "") or "–")
+        add_row("Fingerprint", (details.host_key_fingerprint if details else "") or "–")
+        add_row("Cipher klient → server", (details.cipher_client_to_server if details else "") or "–")
+        add_row("Cipher server → klient", (details.cipher_server_to_client if details else "") or "–")
+        add_row("MAC klient → server", mac_value(details.mac_client_to_server if details else ""))
+        add_row("MAC server → klient", mac_value(details.mac_server_to_client if details else ""))
+        add_row("Komprimering klient → server", (details.compression_client_to_server if details else "") or "–")
+        add_row("Komprimering server → klient", (details.compression_server_to_client if details else "") or "–")
+
+        add_section("Autentisering")
+        add_row("Metod", (details.authentication if details else "") or "–")
 
         if not details or not details.has_details():
             hint = Gtk.Label(
@@ -316,7 +337,8 @@ class MainWindow(Gtk.ApplicationWindow):
             )
             hint.set_line_wrap(True)
             hint.get_style_context().add_class("dim-label")
-            grid.attach(hint, 0, len(rows), 2, 1)
+            hint.set_margin_top(8)
+            grid.attach(hint, 0, row, 2, 1)
 
         dialog.get_content_area().add(grid)
         dialog.show_all()
