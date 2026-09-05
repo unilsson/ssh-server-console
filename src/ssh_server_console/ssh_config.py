@@ -3,6 +3,43 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import shlex
+import glob
+import re
+
+
+def ssh_command(executable: str, alias: str, config_path: Path) -> list[str]:
+    command = [executable]
+    if config_path.resolve() != (Path.home() / ".ssh" / "config").resolve():
+        command.extend(["-F", str(config_path)])
+    return command + ["--", alias]
+
+
+def config_lines(path: Path, stack: tuple = ()):
+    """Expand includes for discovery only; never execute Match exec commands.
+
+    OpenSSH resolves relative user Include paths against ~/.ssh, even with -F.
+    """
+    path = path.resolve()
+    if path in stack or len(stack) >= 16:
+        raise ValueError(f"Include-loop eller för stort inkluderingsdjup: {path}")
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        match = re.match(r"^\s*([^\s=#]+)(?:\s*=\s*|\s+)?(.*)$", raw)
+        if not match:
+            continue
+        key = match.group(1).lower()
+        try:
+            values = shlex.split(match.group(2), comments=True)
+        except ValueError as error:
+            raise ValueError(f"{path}:{number}: {error}") from error
+        if key == "include":
+            for pattern in values:
+                target = Path(pattern).expanduser()
+                if not target.is_absolute():
+                    target = Path.home() / ".ssh" / target
+                for included in sorted(glob.glob(str(target))):
+                    yield from config_lines(Path(included), stack + (path,))
+        else:
+            yield key, values
 
 
 @dataclass(frozen=True)
@@ -34,7 +71,7 @@ def read_hosts(config_path: Path) -> list[SSHHost]:
 
     Wildcard/negated patterns are intentionally excluded because they are
     configuration rules rather than destinations a user can connect to.
-    Includes still affect ssh itself but are not recursively enumerated here.
+    Includes are enumerated syntactically; OpenSSH evaluates matching rules.
     """
     if not config_path.exists():
         return []
@@ -57,26 +94,26 @@ def read_hosts(config_path: Path) -> list[SSHHost]:
         current_aliases = []
         current = {}
 
-    for raw_line in config_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = _clean_line(raw_line).strip()
-        if not line:
-            continue
-        key, _, value = line.partition(" ")
-        key = key.lower()
-        value = value.strip()
+    for key, values in config_lines(config_path):
+        value = " ".join(values)
         if key == "host":
             flush()
             aliases = [
                 alias
-                for alias in value.split()
+                for alias in values
                 if not any(character in alias for character in "*!?")
             ]
             # A Host line may contain several aliases for the same target.
             # Keep only the first concrete name in the graphical server list.
             current_aliases = aliases[:1]
+        elif key == "match":
+            flush()
         elif current_aliases and key in {"hostname", "user", "port"}:
             # OpenSSH uses the first obtained value for each parameter.
             current.setdefault(key, value)
 
     flush()
-    return sorted({host.alias: host for host in hosts}.values(), key=lambda host: host.alias.casefold())
+    unique = {}
+    for host in hosts:
+        unique.setdefault(host.alias, host)
+    return sorted(unique.values(), key=lambda host: host.alias.casefold())

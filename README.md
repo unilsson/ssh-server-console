@@ -7,7 +7,7 @@ Appen lagrar inga lösenord eller nycklar. Den kör systemets `/usr/bin/ssh`, s�
 befintliga inställningar för nycklar, ssh-agent, YubiKey, ProxyJump, portar,
 known_hosts och algoritmer används oförändrade.
 
-## Funktioner i version 0.1
+## Funktioner i version 0.2
 
 - Serverlista från `~/.ssh/config`
 - Sökfält
@@ -17,10 +17,27 @@ known_hosts och algoritmer används oförändrade.
 - Omladdning av serverlistan
 - `Ctrl+Shift+W` stänger aktuell terminalflik
 - `Ctrl+Shift+R` läser om serverlistan
+- Kopiera med `Ctrl+Shift+C`, klistra in med `Ctrl+Shift+V`
+- Högerklicksmeny för kopiera, klistra in, textstorlek och återanslutning
+- `A+`/`A−` ändrar textstorleken i alla flikar; valet sparas mellan starter
+- Pilknapp på fliken återansluter en avslutad session, utan automatisk återanslutning
+- Bekräftelse före stängning av pågående sessioner och hela programmet
+- Startfel visas i dialog och på fliken; avslutade sessioners utskrift ligger kvar
+
+Textstorleken sparas i `$XDG_CONFIG_HOME/ssh-server-console/settings.json`
+(normalt `~/.config/ssh-server-console/settings.json`). Inga anslutningshemligheter
+sparas där. Fliktexten ”SSH körs” betyder att processen har startat, inte att
+autentiseringen är färdig. Inloggningsstatus framgår av terminalen.
 
 Wildcard-poster som `Host *` visas inte som servrar, men OpenSSH tillämpar dem
-fortfarande när en anslutning öppnas. `Include`-filer läses av OpenSSH vid
-anslutning men deras alias listas ännu inte av appen.
+fortfarande när en anslutning öppnas. `Include` stöds med jokertecken, flera
+filer och rekursion (loopar ger felmeddelande). Relativa Include-sökvägar
+utgår från `~/.ssh`, även med `--config`, enligt OpenSSH:s användarkonfiguration.
+Listan är en syntaktisk inventering: villkorliga Include-filer kan ge poster
+som inte är aktiva för en viss anslutning. `Match exec` körs aldrig av listläsaren.
+Visade adress-/användaruppgifter är endast värden från respektive Host-block,
+inte fullständigt utvärderade globala eller villkorliga inställningar.
+OpenSSH avgör alltid den verkliga konfigurationen vid anslutning.
 
 Om en rad innehåller flera namn, exempelvis `Host server server.local 10.0.0.5`,
 visas endast det första namnet (`server`) i listan.
@@ -63,6 +80,9 @@ Om din SSH-konfiguration ligger på en annan plats:
 ~/.local/bin/ssh-server-console --config /annan/sökväg/config
 ```
 
+Den alternativa konfigurationen skickas också till SSH via `-F`.
+Precis som för vanlig `ssh -F` ersätter den då standardkonfigurationsfilerna.
+
 ## Köra utan installation
 
 Installera systemberoendena:
@@ -83,6 +103,24 @@ Parsertesterna kräver inte GTK:
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
+```
+
+GUI-tester med verkliga VTE-processer men utan nätverksanslutning:
+
+```bash
+sudo apt install xvfb xauth
+xvfb-run -a env PYTHONPATH=src /usr/bin/python3 -m unittest discover -s tests -v
+```
+
+GitHub Actions kör båda kontrollerna. GUI-testerna hoppas över utan `DISPLAY`.
+
+## Uppgradera från GitHub
+
+Stäng appen (avsluta sessioner först) och kör i projektkatalogen:
+
+```bash
+git pull --ff-only
+./install.sh
 ```
 
 ## Avinstallation

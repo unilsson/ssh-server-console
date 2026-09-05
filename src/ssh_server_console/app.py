@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import json
 from pathlib import Path
 import shutil
 import sys
@@ -23,6 +24,14 @@ class MainWindow(Gtk.ApplicationWindow):
     def __init__(self, application: Gtk.Application, config_path: Path) -> None:
         super().__init__(application=application, title="SSH-serverkonsol")
         self.config_path = config_path
+        self.sessions = {}
+        self.font_size = 11
+        self.settings_path = Path(GLib.get_user_config_dir()) / "ssh-server-console" / "settings.json"
+        try:
+            settings = json.loads(self.settings_path.read_text())
+            self.font_size = max(6, min(32, int(settings["font_size"])))
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
         self.set_default_size(1100, 700)
         self.set_icon_name("utilities-terminal")
 
@@ -39,6 +48,11 @@ class MainWindow(Gtk.ApplicationWindow):
         config_button.set_tooltip_text("Öppna ~/.ssh/config")
         config_button.connect("clicked", lambda _button: self.open_config())
         header.pack_end(config_button)
+        for label, delta in (("A−", -1), ("A+", 1)):
+            button = Gtk.Button(label=label)
+            button.set_tooltip_text("Ändra terminalens textstorlek")
+            button.connect("clicked", lambda _button, delta=delta: self.change_font(delta))
+            header.pack_end(button)
 
         paned = Gtk.Paned.new(Gtk.Orientation.HORIZONTAL)
         paned.set_position(300)
@@ -72,8 +86,10 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self.welcome_page = None
         self.show_welcome()
-        self.reload_hosts()
+        self.hosts = []
+        GLib.idle_add(self.reload_hosts)
         self.connect("key-press-event", self.on_key_press)
+        self.connect("delete-event", self.on_delete)
 
     def show_welcome(self) -> None:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -91,7 +107,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self.notebook.append_page(box, Gtk.Label(label="Välkommen"))
 
     def reload_hosts(self) -> None:
-        self.hosts = read_hosts(self.config_path)
+        try:
+            self.hosts = read_hosts(self.config_path)
+        except (OSError, ValueError) as error:
+            self.show_error("Kunde inte läsa SSH-konfigurationen", str(error))
         self.populate_list()
 
     def populate_list(self) -> None:
@@ -151,7 +170,8 @@ class MainWindow(Gtk.ApplicationWindow):
         terminal.set_scrollback_lines(10000)
         terminal.set_mouse_autohide(True)
         terminal.set_allow_hyperlink(True)
-        terminal.set_font(Pango.FontDescription("Monospace 11"))
+        terminal.set_font(Pango.FontDescription(f"Monospace {self.font_size}"))
+        terminal.connect("button-press-event", self.on_terminal_button)
 
         tab = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         title = Gtk.Label(label=host.alias)
@@ -159,47 +179,151 @@ class MainWindow(Gtk.ApplicationWindow):
         close.set_relief(Gtk.ReliefStyle.NONE)
         close.set_focus_on_click(False)
         tab.pack_start(title, True, True, 0)
+        reconnect = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.MENU)
+        reconnect.set_relief(Gtk.ReliefStyle.NONE)
+        reconnect.set_tooltip_text("Återanslut avslutad session")
+        reconnect.set_sensitive(False)
+        reconnect.connect("clicked", lambda _button: self.reconnect(terminal))
+        tab.pack_start(reconnect, False, False, 0)
         tab.pack_start(close, False, False, 0)
         tab.show_all()
 
+        terminal.show()
         page_number = self.notebook.append_page(terminal, tab)
         self.notebook.set_tab_reorderable(terminal, True)
         self.notebook.set_current_page(page_number)
         close.connect("clicked", lambda _button: self.close_terminal(terminal))
         terminal.connect("child-exited", lambda _terminal, status: self.on_child_exited(terminal, title, status))
-
-        environment = [f"{key}={value}" for key, value in os.environ.items()]
-        terminal.spawn_async(
-            Vte.PtyFlags.DEFAULT,
-            str(Path.home()),
-            [ssh_path, host.alias],
-            environment,
-            GLib.SpawnFlags.DEFAULT,
-            None,
-            None,
-            -1,
-            None,
-            None,
-        )
+        self.sessions[terminal] = dict(host=host, title=title, reconnect=reconnect, active=False)
         terminal.show()
+        self.start_session(terminal, ssh_path)
         terminal.grab_focus()
 
+    def start_session(self, terminal, ssh_path):
+        session = self.sessions[terminal]
+        session["active"] = True  # Also protects a spawn that is still pending.
+        session["reconnect"].set_sensitive(False)
+        session["title"].set_text(f'{session["host"].alias} · startar')
+        environment = [f"{key}={value}" for key, value in os.environ.items()]
+        from .ssh_config import ssh_command
+        try:
+            terminal.spawn_async(
+                pty_flags=Vte.PtyFlags.DEFAULT, working_directory=str(Path.home()),
+                argv=ssh_command(ssh_path, session["host"].alias, self.config_path),
+                envv=environment, spawn_flags=GLib.SpawnFlags.DEFAULT,
+                child_setup=None, timeout=-1, cancellable=None,
+                callback=self.on_spawned,
+            )
+        except (GLib.Error, TypeError, ValueError) as error:
+            self.on_spawned(terminal, -1, error, None)
+
+    def on_spawned(self, terminal, pid, error, _data=None):
+        session = self.sessions.get(terminal)
+        if session is None:
+            return
+        if error:
+            session["active"] = False
+            session["title"].set_text(f'{session["host"].alias} · startfel')
+            session["reconnect"].set_sensitive(True)
+            self.show_error("Kunde inte starta SSH", str(error))
+        elif session["active"]:
+            # A running process does not prove that SSH authentication succeeded.
+            session["title"].set_text(f'{session["host"].alias} · SSH körs')
+
+    def reconnect(self, terminal):
+        session = self.sessions.get(terminal)
+        if session and not session["active"]:
+            ssh_path = shutil.which("ssh")
+            if not ssh_path:
+                self.show_error("OpenSSH-klienten kunde inte hittas", "Installera openssh-client.")
+                return
+            terminal.feed(b"\r\n[Ny anslutning]\r\n")
+            self.start_session(terminal, ssh_path)
+            terminal.grab_focus()
+
     def close_terminal(self, terminal: Vte.Terminal) -> None:
+        session = self.sessions.get(terminal)
+        if session and session["active"] and not self.confirm_close("Stäng den pågående SSH-sessionen?"):
+            return
+        self.sessions.pop(terminal, None)
         page = self.notebook.page_num(terminal)
         if page >= 0:
             self.notebook.remove_page(page)
+        terminal.destroy()
         if self.notebook.get_n_pages() == 0:
             self.show_welcome()
             self.notebook.show_all()
 
     def on_child_exited(self, terminal: Vte.Terminal, title: Gtk.Label, status: int) -> None:
-        title.set_text(f"{title.get_text()} · avslutad")
-        terminal.feed(f"\r\n[SSH-sessionen avslutades med status {status}]\r\n".encode())
+        session = self.sessions.get(terminal)
+        if not session:
+            return
+        session["active"] = False
+        session["reconnect"].set_sensitive(True)
+        title.set_text(f'{session["host"].alias} · avslutad')
+        code = os.waitstatus_to_exitcode(status)
+        terminal.feed(f"\r\n[SSH avslutades: {code}. Använd pilknappen på fliken för att återansluta.]\r\n".encode())
+
+    def confirm_close(self, text):
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True,
+                                   message_type=Gtk.MessageType.WARNING, text=text)
+        dialog.format_secondary_text("Anslutningen bryts. Pågående fjärrkommandon kan avbrytas.")
+        dialog.add_button("Avbryt", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Stäng", Gtk.ResponseType.ACCEPT)
+        dialog.set_default_response(Gtk.ResponseType.CANCEL)
+        accepted = dialog.run() == Gtk.ResponseType.ACCEPT
+        dialog.destroy()
+        return accepted
+
+    def on_delete(self, *_args):
+        count = sum(session["active"] for session in self.sessions.values())
+        if count and not self.confirm_close(f"Stäng programmet med {count} pågående SSH-sessioner?"):
+            return True
+        for terminal in list(self.sessions):
+            self.sessions.pop(terminal)
+            terminal.destroy()
+        return False
+
+    def change_font(self, delta):
+        self.font_size = max(6, min(32, self.font_size + delta))
+        for terminal in self.sessions:
+            terminal.set_font(Pango.FontDescription(f"Monospace {self.font_size}"))
+        try:
+            self.settings_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            temporary = self.settings_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"font_size": self.font_size}))
+            temporary.replace(self.settings_path)
+        except OSError as error:
+            self.show_error("Textstorleken kunde inte sparas", str(error))
+
+    def on_terminal_button(self, terminal, event):
+        if event.button != 3:
+            return False
+        menu = Gtk.Menu()
+        actions = [
+            ("Kopiera", lambda: terminal.copy_clipboard_format(Vte.Format.TEXT), terminal.get_has_selection()),
+            ("Klistra in", terminal.paste_clipboard, self.sessions[terminal]["active"]),
+            ("Större text", lambda: self.change_font(1), True),
+            ("Mindre text", lambda: self.change_font(-1), True),
+            ("Återanslut", lambda: self.reconnect(terminal), not self.sessions[terminal]["active"]),
+        ]
+        for label, callback, enabled in actions:
+            item = Gtk.MenuItem(label=label)
+            item.set_sensitive(enabled)
+            item.connect("activate", lambda _item, callback=callback: callback())
+            menu.append(item)
+        self.terminal_menu = menu
+        menu.show_all()
+        menu.popup_at_pointer(event)
+        return True
 
     def open_config(self) -> None:
-        self.config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.config_path.touch(mode=0o600, exist_ok=True)
-        Gio.AppInfo.launch_default_for_uri(self.config_path.as_uri(), None)
+        try:
+            self.config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self.config_path.touch(mode=0o600, exist_ok=True)
+            Gio.AppInfo.launch_default_for_uri(self.config_path.as_uri(), None)
+        except (OSError, GLib.Error) as error:
+            self.show_error("Kunde inte öppna konfigurationen", str(error))
 
     def show_error(self, title: str, details: str) -> None:
         dialog = Gtk.MessageDialog(
@@ -216,6 +340,21 @@ class MainWindow(Gtk.ApplicationWindow):
     def on_key_press(self, _widget: Gtk.Widget, event: Gdk.EventKey) -> bool:
         modifiers = event.state & Gtk.accelerator_get_default_mod_mask()
         if modifiers == (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK):
+            page = self.notebook.get_nth_page(self.notebook.get_current_page())
+            if isinstance(page, Vte.Terminal):
+                if event.keyval in (Gdk.KEY_c, Gdk.KEY_C):
+                    page.copy_clipboard_format(Vte.Format.TEXT)
+                    return True
+                if event.keyval in (Gdk.KEY_v, Gdk.KEY_V):
+                    if self.sessions[page]["active"]:
+                        page.paste_clipboard()
+                    return True
+            if event.keyval in (Gdk.KEY_plus, Gdk.KEY_equal):
+                self.change_font(1)
+                return True
+            if event.keyval in (Gdk.KEY_minus, Gdk.KEY_underscore):
+                self.change_font(-1)
+                return True
             if event.keyval in (Gdk.KEY_w, Gdk.KEY_W):
                 page = self.notebook.get_nth_page(self.notebook.get_current_page())
                 if isinstance(page, Vte.Terminal):

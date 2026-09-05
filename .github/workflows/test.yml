@@ -24,3 +24,9 @@ jobs:
 
       - name: Compile Python sources
         run: python3 -m compileall -q src tests
+
+      - name: Install GTK and headless display
+        run: sudo apt-get update && sudo apt-get install -y python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 xvfb xauth
+
+      - name: GUI and terminal lifecycle tests (system Python for PyGObject)
+        run: xvfb-run -a env PYTHONPATH=src /usr/bin/python3 -m unittest discover -s tests -v
