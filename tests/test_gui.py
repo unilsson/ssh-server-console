@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+import uuid
 from unittest.mock import patch
 
 if not os.environ.get("DISPLAY"):
@@ -19,6 +20,7 @@ class GuiTests(unittest.TestCase):
         self.config = Path(self.temp.name) / 'config'
         self.config.write_text('Host alpha beta\nHostName example.com\n')
         self.app = SSHServerConsole(self.config)
+        self.app.set_application_id('se.haninge.Test' + uuid.uuid4().hex)
         self.app.register(None)
         self.window = MainWindow(self.app, self.config)
         self.window.settings_path = Path(self.temp.name) / 'settings.json'
