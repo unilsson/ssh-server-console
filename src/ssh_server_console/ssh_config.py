@@ -7,8 +7,15 @@ import glob
 import re
 
 
-def ssh_command(executable: str, alias: str, config_path: Path) -> list[str]:
+def ssh_command(
+    executable: str,
+    alias: str,
+    config_path: Path,
+    debug_log: Path | None = None,
+) -> list[str]:
     command = [executable]
+    if debug_log is not None:
+        command.extend(["-v", "-E", str(debug_log)])
     if config_path.resolve() != (Path.home() / ".ssh" / "config").resolve():
         command.extend(["-F", str(config_path)])
     return command + ["--", alias]
