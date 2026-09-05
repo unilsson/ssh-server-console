@@ -54,6 +54,14 @@ class SSHConfigTests(unittest.TestCase):
         self.assertEqual(ssh_command('/usr/bin/ssh', 'alpha', config),
                          ['/usr/bin/ssh', '-F', str(config), '--', 'alpha'])
 
+    def test_debug_log_adds_verbose_file_without_shell(self):
+        config = Path.home() / '.ssh/config'
+        debug_log = Path('/tmp/ssh console.log')
+        self.assertEqual(
+            ssh_command('/usr/bin/ssh', 'alpha', config, debug_log),
+            ['/usr/bin/ssh', '-v', '-E', str(debug_log), '--', 'alpha'],
+        )
+
     def test_default_config_preserves_system_config(self):
         self.assertEqual(ssh_command('/usr/bin/ssh', 'alpha', Path.home() / '.ssh/config'),
                          ['/usr/bin/ssh', '--', 'alpha'])
