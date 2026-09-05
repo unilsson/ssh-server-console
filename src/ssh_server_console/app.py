@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import shutil
 import sys
+import tempfile
 
 import gi
 
@@ -14,6 +15,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Vte", "2.91")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango, Vte  # noqa: E402
 
+from .connection_info import read_connection_log
 from .ssh_config import SSHHost, read_hosts
 
 
@@ -179,6 +181,14 @@ class MainWindow(Gtk.ApplicationWindow):
         close.set_relief(Gtk.ReliefStyle.NONE)
         close.set_focus_on_click(False)
         tab.pack_start(title, True, True, 0)
+
+        info = Gtk.Button.new_from_icon_name("dialog-information-symbolic", Gtk.IconSize.MENU)
+        info.set_relief(Gtk.ReliefStyle.NONE)
+        info.set_focus_on_click(False)
+        info.set_tooltip_text("Visa SSH-anslutningsinformation")
+        info.connect("clicked", lambda _button: self.show_connection_info(terminal))
+        tab.pack_start(info, False, False, 0)
+
         reconnect = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.MENU)
         reconnect.set_relief(Gtk.ReliefStyle.NONE)
         reconnect.set_tooltip_text("Återanslut avslutad session")
@@ -194,16 +204,39 @@ class MainWindow(Gtk.ApplicationWindow):
         self.notebook.set_current_page(page_number)
         close.connect("clicked", lambda _button: self.close_terminal(terminal))
         terminal.connect("child-exited", lambda _terminal, status: self.on_child_exited(terminal, title, status))
-        self.sessions[terminal] = dict(host=host, title=title, reconnect=reconnect, active=False)
+        self.sessions[terminal] = dict(
+            host=host,
+            title=title,
+            reconnect=reconnect,
+            active=False,
+            debug_log=None,
+        )
         terminal.show()
         self.start_session(terminal, ssh_path)
         terminal.grab_focus()
+
+    def new_debug_log(self) -> Path:
+        fd, name = tempfile.mkstemp(prefix="ssh-server-console-", suffix=".log")
+        os.close(fd)
+        os.chmod(name, 0o600)
+        return Path(name)
+
+    def cleanup_debug_log(self, session) -> None:
+        path = session.get("debug_log")
+        if path:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            session["debug_log"] = None
 
     def start_session(self, terminal, ssh_path):
         session = self.sessions[terminal]
         session["active"] = True  # Also protects a spawn that is still pending.
         session["reconnect"].set_sensitive(False)
         session["title"].set_text(f'{session["host"].alias} · startar')
+        self.cleanup_debug_log(session)
+        session["debug_log"] = self.new_debug_log()
         environment = [f"{key}={value}" for key, value in os.environ.items()]
         from .ssh_config import ssh_command
         try:
@@ -211,13 +244,14 @@ class MainWindow(Gtk.ApplicationWindow):
             # it is omitted from their generated docstring. Modern overrides
             # omit that argument. A signature TypeError occurs before spawning.
             arguments = [Vte.PtyFlags.DEFAULT, str(Path.home()),
-                         ssh_command(ssh_path, session["host"].alias, self.config_path),
+                         ssh_command(ssh_path, session["host"].alias, self.config_path,
+                                     session["debug_log"]),
                          environment, GLib.SpawnFlags.DEFAULT, None]
             try:
                 terminal.spawn_async(*arguments, None, -1, None, self.on_spawned, None)
             except TypeError:
                 terminal.spawn_async(*arguments, -1, None, self.on_spawned, None)
-        except (GLib.Error, TypeError, ValueError) as error:
+        except (GLib.Error, TypeError, ValueError, OSError) as error:
             self.on_spawned(terminal, -1, error, None)
 
     def on_spawned(self, terminal, pid, error, _data=None):
@@ -233,12 +267,68 @@ class MainWindow(Gtk.ApplicationWindow):
             # A running process does not prove that SSH authentication succeeded.
             session["title"].set_text(f'{session["host"].alias} · SSH körs')
 
+    def show_connection_info(self, terminal) -> None:
+        session = self.sessions.get(terminal)
+        if not session:
+            return
+        host = session["host"]
+        details = read_connection_log(session["debug_log"]) if session.get("debug_log") else None
+
+        dialog = Gtk.Dialog(
+            title=f"SSH-information · {host.alias}",
+            transient_for=self,
+            modal=True,
+        )
+        dialog.add_button("Stäng", Gtk.ResponseType.CLOSE)
+        dialog.set_default_size(620, -1)
+        grid = Gtk.Grid(column_spacing=18, row_spacing=7)
+        grid.set_border_width(16)
+
+        rows = [
+            ("Värd", host.alias),
+            ("Adress", (details.address if details else "") or host.hostname or "–"),
+            ("Port", (details.port if details else "") or host.port or "22"),
+            ("Användare", host.user or "–"),
+            ("Serverversion", (details.remote_version if details else "") or "–"),
+            ("Key exchange", (details.kex_algorithm if details else "") or "–"),
+            ("Host key", (details.host_key_algorithm if details else "") or "–"),
+            ("Fingerprint", (details.host_key_fingerprint if details else "") or "–"),
+            ("Kryptering klient → server", (details.cipher_client_to_server if details else "") or "–"),
+            ("Kryptering server → klient", (details.cipher_server_to_client if details else "") or "–"),
+            ("MAC klient → server", (details.mac_client_to_server if details else "") or "–"),
+            ("MAC server → klient", (details.mac_server_to_client if details else "") or "–"),
+            ("Komprimering klient → server", (details.compression_client_to_server if details else "") or "–"),
+            ("Komprimering server → klient", (details.compression_server_to_client if details else "") or "–"),
+            ("Autentisering", (details.authentication if details else "") or "–"),
+        ]
+        for row, (label_text, value_text) in enumerate(rows):
+            label = Gtk.Label(label=label_text, xalign=1)
+            label.get_style_context().add_class("dim-label")
+            value = Gtk.Label(label=value_text, xalign=0, selectable=True)
+            value.set_line_wrap(True)
+            grid.attach(label, 0, row, 1, 1)
+            grid.attach(value, 1, row, 1, 1)
+
+        if not details or not details.has_details():
+            hint = Gtk.Label(
+                label="Förhandlade uppgifter blir tillgängliga när SSH har kommit tillräckligt långt i anslutningen.",
+                xalign=0,
+            )
+            hint.set_line_wrap(True)
+            hint.get_style_context().add_class("dim-label")
+            grid.attach(hint, 0, len(rows), 2, 1)
+
+        dialog.get_content_area().add(grid)
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
     def reconnect(self, terminal):
         session = self.sessions.get(terminal)
         if session and not session["active"]:
             ssh_path = shutil.which("ssh")
             if not ssh_path:
-                self.show_error("OpenSSH-klienten kunde inte hittas", "Installera openssh-client.")
+                self.show_error("OpenSSH-klienten kunde inte hittas", "Installera paketet openssh-client.")
                 return
             terminal.feed(b"\r\n[Ny anslutning]\r\n")
             self.start_session(terminal, ssh_path)
@@ -248,7 +338,9 @@ class MainWindow(Gtk.ApplicationWindow):
         session = self.sessions.get(terminal)
         if session and session["active"] and not self.confirm_close("Stäng den pågående SSH-sessionen?"):
             return
-        self.sessions.pop(terminal, None)
+        session = self.sessions.pop(terminal, None)
+        if session:
+            self.cleanup_debug_log(session)
         page = self.notebook.page_num(terminal)
         if page >= 0:
             self.notebook.remove_page(page)
@@ -283,7 +375,8 @@ class MainWindow(Gtk.ApplicationWindow):
         if count and not self.confirm_close(f"Stäng programmet med {count} pågående SSH-sessioner?"):
             return True
         for terminal in list(self.sessions):
-            self.sessions.pop(terminal)
+            session = self.sessions.pop(terminal)
+            self.cleanup_debug_log(session)
             terminal.destroy()
         return False
 
@@ -306,6 +399,7 @@ class MainWindow(Gtk.ApplicationWindow):
         actions = [
             ("Kopiera", lambda: terminal.copy_clipboard_format(Vte.Format.TEXT), terminal.get_has_selection()),
             ("Klistra in", terminal.paste_clipboard, self.sessions[terminal]["active"]),
+            ("SSH-information", lambda: self.show_connection_info(terminal), True),
             ("Större text", lambda: self.change_font(1), True),
             ("Mindre text", lambda: self.change_font(-1), True),
             ("Återanslut", lambda: self.reconnect(terminal), not self.sessions[terminal]["active"]),
