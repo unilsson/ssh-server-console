@@ -7,7 +7,7 @@ Appen lagrar inga lösenord eller nycklar. Den kör systemets `/usr/bin/ssh`, s�
 befintliga inställningar för nycklar, ssh-agent, YubiKey, ProxyJump, portar,
 known_hosts och algoritmer används oförändrade.
 
-## Funktioner i version 0.2
+## Funktioner i version 0.3
 
 - Serverlista från `~/.ssh/config`
 - Sökfält
@@ -18,11 +18,19 @@ known_hosts och algoritmer används oförändrade.
 - `Ctrl+Shift+W` stänger aktuell terminalflik
 - `Ctrl+Shift+R` läser om serverlistan
 - Kopiera med `Ctrl+Shift+C`, klistra in med `Ctrl+Shift+V`
-- Högerklicksmeny för kopiera, klistra in, textstorlek och återanslutning
+- Högerklicksmeny för kopiera, klistra in, textstorlek, SSH-information och återanslutning
 - `A+`/`A−` ändrar textstorleken i alla flikar; valet sparas mellan starter
 - Pilknapp på fliken återansluter en avslutad session, utan automatisk återanslutning
+- Informationsknapp på varje terminalflik visar verkligt förhandlade SSH-parametrar
+- SSH-informationen visar adress, port, serverversion, key exchange, host key,
+  fingerprint, cipher, MAC, komprimering och autentiseringsmetod
 - Bekräftelse före stängning av pågående sessioner och hela programmet
 - Startfel visas i dialog och på fliken; avslutade sessioners utskrift ligger kvar
+
+SSH-informationen hämtas från OpenSSH:s verbose-logg för den aktuella sessionen.
+Det betyder att dialogen visar vad den verkliga SSH-anslutningen faktiskt
+förhandlade fram, inte bara värden från `~/.ssh/config`. Debugloggen ligger i en
+temporär fil med begränsade rättigheter och tas bort när fliken stängs.
 
 Textstorleken sparas i `$XDG_CONFIG_HOME/ssh-server-console/settings.json`
 (normalt `~/.config/ssh-server-console/settings.json`). Inga anslutningshemligheter
