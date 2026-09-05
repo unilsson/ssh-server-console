@@ -207,12 +207,17 @@ class MainWindow(Gtk.ApplicationWindow):
         environment = [f"{key}={value}" for key, value in os.environ.items()]
         from .ssh_config import ssh_command
         try:
+            # Older GI bindings expose child_setup_data; newer VTE overrides
+            # hide it. Both are shipped by supported Ubuntu installations.
+            extra = {}
+            if "child_setup_data" in (terminal.spawn_async.__doc__ or ""):
+                extra["child_setup_data"] = None
             terminal.spawn_async(
                 pty_flags=Vte.PtyFlags.DEFAULT, working_directory=str(Path.home()),
                 argv=ssh_command(ssh_path, session["host"].alias, self.config_path),
                 envv=environment, spawn_flags=GLib.SpawnFlags.DEFAULT,
                 child_setup=None, timeout=-1, cancellable=None,
-                callback=self.on_spawned,
+                callback=self.on_spawned, **extra,
             )
         except (GLib.Error, TypeError, ValueError) as error:
             self.on_spawned(terminal, -1, error, None)

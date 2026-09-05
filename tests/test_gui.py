@@ -4,7 +4,6 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
-import uuid
 from unittest.mock import patch
 
 if not os.environ.get("DISPLAY"):
@@ -15,13 +14,15 @@ from ssh_server_console.ssh_config import SSHHost
 
 
 class GuiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = SSHServerConsole(Path('/unused-test-config'))
+        cls.app.register(None)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.config = Path(self.temp.name) / 'config'
         self.config.write_text('Host alpha beta\nHostName example.com\n')
-        self.app = SSHServerConsole(self.config)
-        self.app.set_application_id('se.haninge.Test' + uuid.uuid4().hex)
-        self.app.register(None)
         self.window = MainWindow(self.app, self.config)
         self.window.settings_path = Path(self.temp.name) / 'settings.json'
         self.errors = []
@@ -65,6 +66,7 @@ class GuiTests(unittest.TestCase):
         terminal = self.open_fake()
         self.wait_for(lambda: not self.window.sessions[terminal]['active'])
         session = self.window.sessions[terminal]
+        self.assertFalse(self.errors, str(self.errors) + str(Vte.Terminal.spawn_async.__doc__))
         self.assertTrue(session['reconnect'].get_sensitive())
         self.assertIn('avslutad', session['title'].get_text())
         with patch('ssh_server_console.ssh_config.ssh_command', return_value=['/bin/true']):
