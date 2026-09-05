@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=SSH-serverkonsol
+Comment=Anslut till servrar från din OpenSSH-konfiguration
+Exec=ssh-server-console
+Icon=utilities-terminal
+Terminal=false
+Type=Application
+Categories=System;TerminalEmulator;Network;
+Keywords=SSH;server;terminal;

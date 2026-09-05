@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ssh-server-console"
+version = "0.1.0"
+description = "A small GTK SSH connection manager that uses OpenSSH"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [{name = "SSH Server Console contributors"}]
+
+[project.scripts]
+ssh-server-console = "ssh_server_console.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
